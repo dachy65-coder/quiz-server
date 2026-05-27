@@ -1,0 +1,12 @@
+{
+  "name": "quiz-server",
+  "version": "1.0.0",
+  "description": "Quiz results backend for Whitestone Insurance training",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
