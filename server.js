@@ -2,16 +2,13 @@ const http = require('http');
 
 const PORT = process.env.PORT || 3000;
 
-// In-memory store (persists while server is running)
 let results = [];
 
 const server = http.createServer((req, res) => {
-  // CORS headers — allow requests from GitLab Pages
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -25,11 +22,6 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
-        if (!data.name || data.score === undefined) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing name or score' }));
-          return;
-        }
         const entry = {
           id: Date.now(),
           name: data.name,
@@ -57,9 +49,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // DELETE /results — clear all (dashboard reset button)
-  if (req.method === 'DELETE' && req.url === '/results') {
+  // POST /clear — clear all results
+  if (req.method === 'POST' && req.url === '/clear') {
     results = [];
+    console.log('Results cleared');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
