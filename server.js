@@ -5,7 +5,8 @@ const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 let results = [];
-let activeQuiz = null; // { title, questions: [{q, opts, ans, exp}] }
+let savedQuizzes = []; // [{ id, title, questions, createdAt }]
+let activeQuizId = null;
 
 function callAnthropic(base64pdf) {
   return new Promise((resolve, reject) => {
@@ -64,6 +65,10 @@ function readBody(req) {
   });
 }
 
+function getActiveQuiz() {
+  return savedQuizzes.find(q => q.id === activeQuizId) || null;
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -75,7 +80,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /result — student submits score
+  // ---- RESULTS ----
+
   if (req.method === 'POST' && req.url === '/result') {
     try {
       const body = await readBody(req);
@@ -99,14 +105,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /results
   if (req.method === 'GET' && req.url === '/results') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(results));
     return;
   }
 
-  // POST /clear
   if (req.method === 'POST' && req.url === '/clear') {
     results = [];
     console.log('Results cleared');
@@ -115,14 +119,51 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /quiz — teacher sets active quiz questions directly
-  if (req.method === 'POST' && req.url === '/quiz') {
+  // ---- SAVED QUIZZES ----
+
+  // GET /quizzes — list all saved quizzes (lightweight, no full question text needed for list view but fine to include)
+  if (req.method === 'GET' && req.url === '/quizzes') {
+    const list = savedQuizzes.map(q => ({
+      id: q.id,
+      title: q.title,
+      count: q.questions.length,
+      createdAt: q.createdAt
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ quizzes: list, activeQuizId }));
+    return;
+  }
+
+  // POST /activate — { quizId } set which saved quiz is active
+  if (req.method === 'POST' && req.url === '/activate') {
     try {
       const body = await readBody(req);
       const data = JSON.parse(body);
-      activeQuiz = { title: data.title || 'Quiz', questions: data.questions };
+      const quiz = savedQuizzes.find(q => q.id === data.quizId);
+      if (!quiz) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Quiz not found' }));
+        return;
+      }
+      activeQuizId = quiz.id;
       results = [];
-      console.log('Active quiz set:', activeQuiz.title, activeQuiz.questions.length, 'questions');
+      console.log('Activated quiz:', quiz.title);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, title: quiz.title }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+    }
+    return;
+  }
+
+  // DELETE /quizzes — { quizId } remove a saved quiz
+  if (req.method === 'DELETE' && req.url === '/quizzes') {
+    try {
+      const body = await readBody(req);
+      const data = JSON.parse(body);
+      savedQuizzes = savedQuizzes.filter(q => q.id !== data.quizId);
+      if (activeQuizId === data.quizId) activeQuizId = null;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
@@ -132,14 +173,39 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /quiz — student fetches active quiz
+  // GET /quiz — student fetches the currently active quiz (kept for compatibility with index.html)
   if (req.method === 'GET' && req.url === '/quiz') {
+    const active = getActiveQuiz();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(activeQuiz));
+    res.end(JSON.stringify(active ? { title: active.title, questions: active.questions } : null));
     return;
   }
 
-  // POST /generate-quiz — dashboard sends PDF, server calls AI, activates quiz
+  // POST /quiz — manually set/save+activate a quiz (e.g. from a fixed JSON payload)
+  if (req.method === 'POST' && req.url === '/quiz') {
+    try {
+      const body = await readBody(req);
+      const data = JSON.parse(body);
+      const quiz = {
+        id: Date.now(),
+        title: data.title || 'Quiz',
+        questions: data.questions,
+        createdAt: new Date().toISOString()
+      };
+      savedQuizzes.push(quiz);
+      activeQuizId = quiz.id;
+      results = [];
+      console.log('Quiz saved & activated:', quiz.title, quiz.questions.length, 'questions');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, id: quiz.id, title: quiz.title }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+    }
+    return;
+  }
+
+  // POST /generate-quiz — dashboard sends PDF, server calls AI, saves + activates quiz
   if (req.method === 'POST' && req.url === '/generate-quiz') {
     try {
       if (!ANTHROPIC_API_KEY) {
@@ -168,12 +234,19 @@ const server = http.createServer(async (req, res) => {
         throw new Error('AI did not return valid questions');
       }
 
-      activeQuiz = { title: title || 'Generated Quiz', questions };
+      const quiz = {
+        id: Date.now(),
+        title: title || 'Generated Quiz',
+        questions,
+        createdAt: new Date().toISOString()
+      };
+      savedQuizzes.push(quiz);
+      activeQuizId = quiz.id;
       results = [];
-      console.log('Quiz generated:', activeQuiz.title, questions.length, 'questions');
+      console.log('Quiz generated & activated:', quiz.title, questions.length, 'questions');
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, title: activeQuiz.title, count: questions.length }));
+      res.end(JSON.stringify({ ok: true, id: quiz.id, title: quiz.title, count: questions.length }));
     } catch (e) {
       console.error('Generate quiz error:', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -184,8 +257,9 @@ const server = http.createServer(async (req, res) => {
 
   // Health check
   if (req.method === 'GET' && req.url === '/') {
+    const active = getActiveQuiz();
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Quiz server running. ' + results.length + ' results stored. Quiz: ' + (activeQuiz ? activeQuiz.title : 'none') + '. API key configured: ' + (!!ANTHROPIC_API_KEY));
+    res.end('Quiz server running. ' + results.length + ' results stored. ' + savedQuizzes.length + ' saved quizzes. Active: ' + (active ? active.title : 'none') + '. API key configured: ' + (!!ANTHROPIC_API_KEY));
     return;
   }
 
